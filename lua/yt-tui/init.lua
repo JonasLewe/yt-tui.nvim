@@ -11,6 +11,7 @@ local defaults = {
 }
 local config = vim.deepcopy(defaults)
 local session
+local restart_request = 0
 
 local function notify(message, level)
   vim.notify("yt-tui.nvim: " .. message, level or vim.log.levels.ERROR)
@@ -86,6 +87,44 @@ local function window_config(opts)
   return result
 end
 
+local function owned_window(current)
+  local win = current.win
+  if win and api.nvim_win_is_valid(win) and api.nvim_win_get_buf(win) == current.buf then
+    return win
+  end
+end
+
+-- The window is disposable; the terminal buffer owns the live process.
+local function hide_window(current)
+  local win = owned_window(current)
+  local return_win = current.return_win
+  if not win then
+    current.win = nil
+    current.return_win = nil
+    return true
+  end
+  local focused = api.nvim_get_current_win() == win
+  if focused then
+    vim.cmd.stopinsert()
+  end
+  local hidden, err = pcall(api.nvim_win_close, win, true)
+  if not hidden then
+    notify("could not hide floating window: " .. tostring(err))
+    return false
+  end
+  -- WinClosed/BufHidden may already have detached this exact window.
+  if current.win == win then
+    current.win = nil
+    current.return_win = nil
+  end
+  if focused and return_win and api.nvim_win_is_valid(return_win)
+    and api.nvim_win_get_tabpage(return_win) == api.nvim_get_current_tabpage()
+  then
+    api.nvim_set_current_win(return_win)
+  end
+  return true
+end
+
 local function dispose(current)
   if current.closed then
     return
@@ -100,21 +139,14 @@ local function dispose(current)
   if current.running and current.job and current.job > 0 then
     pcall(vim.fn.jobstop, current.job)
   end
-  if api.nvim_get_current_buf() == current.buf then
-    vim.cmd.stopinsert()
-  end
-  if current.win and api.nvim_win_is_valid(current.win)
-    and api.nvim_win_get_buf(current.win) == current.buf
-  then
-    pcall(api.nvim_win_close, current.win, true)
-  end
+  hide_window(current)
   if api.nvim_buf_is_valid(current.buf) then
     pcall(api.nvim_buf_delete, current.buf, { force = true })
   end
 end
 
--- WinClosed and BufWipeout run while their window/buffer is being removed.
--- Defer API mutations, and detach this session immediately so a new one is safe.
+-- Buffer removal can run under textlock. Detach immediately so a replacement
+-- session is safe, then release the old job and callbacks outside the event.
 local function schedule_dispose(current)
   if current.closed or current.closing then
     return
@@ -128,18 +160,47 @@ local function schedule_dispose(current)
   end)
 end
 
----Close the floating terminal and stop its process.
-function M.close()
-  if session then
-    dispose(session)
+local function show(current)
+  local win = owned_window(current)
+  if win and api.nvim_win_get_tabpage(win) ~= api.nvim_get_current_tabpage() then
+    if not hide_window(current) then
+      return false
+    end
+    win = nil
   end
+  local previous = api.nvim_get_current_win()
+  if not win then
+    local opened, result = pcall(api.nvim_open_win, current.buf, true, window_config(current.opts))
+    if not opened then
+      notify("could not open floating window: " .. tostring(result))
+      return false
+    end
+    win = result
+    current.win = win
+  else
+    local focused, err = pcall(api.nvim_set_current_win, win)
+    if not focused then
+      notify("could not focus floating window: " .. tostring(err))
+      return false
+    end
+  end
+  -- Entering a buffer can run user autocmds that close or repurpose its window.
+  if current.closed or current.closing or owned_window(current) ~= win then
+    return false
+  end
+  api.nvim_win_set_config(win, window_config(current.opts))
+  if previous ~= win then
+    current.return_win = previous
+  end
+  if current.running then
+    vim.cmd.startinsert()
+  else
+    vim.cmd.stopinsert()
+  end
+  return true
 end
 
----Open yt-tui, or focus the current running session when no arguments are given.
----@param args? string[] Arguments appended to the configured defaults.
----@return boolean
-function M.open(args)
-  args = args or {}
+local function validate_args(args)
   if not valid_args(args) then
     notify("arguments must be a list of strings")
     return false
@@ -148,42 +209,36 @@ function M.open(args)
     notify("Neovim 0.11 or newer is required")
     return false
   end
+  return true
+end
 
-  if session then
-    if session.running
-      and api.nvim_win_is_valid(session.win)
-      and api.nvim_buf_is_valid(session.buf)
-      and api.nvim_win_get_buf(session.win) == session.buf
-    then
-      if #args > 0 then
-        notify("a session is already running; use :YtTuiClose before opening with new arguments", vim.log.levels.WARN)
-        return false
-      end
-      api.nvim_set_current_win(session.win)
-      vim.cmd.startinsert()
-      return true
-    end
-    dispose(session)
+local function preflight(args)
+  if not validate_args(args) then
+    return false
   end
-
   if vim.fn.executable(config.executable) ~= 1 then
     notify("executable not found: " .. config.executable .. ". Install yt-tui or set setup({ executable = ... }).")
     return false
   end
+  return true
+end
 
-  local current = { buf = api.nvim_create_buf(false, true), opts = vim.deepcopy(config), running = true }
-  session = current
-  vim.b[current.buf].terminal_passthrough = true
-  local opened, win = pcall(api.nvim_open_win, current.buf, true, window_config(current.opts))
-  if not opened then
-    dispose(current)
-    notify("could not open floating window: " .. tostring(win))
+local function launch(args)
+  if not preflight(args) then
     return false
   end
-  current.win = win
+  local current = { buf = api.nvim_create_buf(false, true), opts = vim.deepcopy(config), running = false }
+  session = current
+  vim.bo[current.buf].bufhidden = "hide"
+  vim.b[current.buf].terminal_passthrough = true
+  if not show(current) then
+    dispose(current)
+    return false
+  end
   local command = { current.opts.executable }
   vim.list_extend(command, current.opts.args)
   vim.list_extend(command, args)
+  current.running = true
   local started, job = pcall(vim.fn.jobstart, command, {
     term = true,
     on_exit = function(_, code)
@@ -200,7 +255,7 @@ function M.open(args)
           end
           notify(
             "process exited with code " .. code
-              .. "; output kept open. Use :YtTui to retry or :YtTuiClose to close.",
+              .. "; output retained. Use :YtTui to inspect, :YtTuiRestart to retry, or :YtTuiClose to discard.",
             vim.log.levels.WARN
           )
         end
@@ -210,11 +265,14 @@ function M.open(args)
   if not started or job <= 0 then
     current.running = false
     dispose(current)
-    notify("could not start " .. config.executable .. ": " .. tostring(job))
+    notify("could not start " .. current.opts.executable .. ": " .. tostring(job))
     return false
   end
   current.job = job
-  if not api.nvim_buf_is_valid(current.buf) or not api.nvim_win_is_valid(current.win) then
+  -- TermOpen may synchronously close/restart the session before jobstart returns
+  -- its job ID. dispose() could not stop that job yet, so finish cleanup here.
+  if current.closed or current.closing or session ~= current or not api.nvim_buf_is_valid(current.buf) then
+    pcall(vim.fn.jobstop, job)
     dispose(current)
     return false
   end
@@ -224,31 +282,143 @@ function M.open(args)
   api.nvim_create_autocmd("VimResized", {
     group = current.group,
     callback = function()
-      if api.nvim_win_is_valid(current.win) then
-        api.nvim_win_set_config(current.win, window_config(current.opts))
+      local win = owned_window(current)
+      if win then
+        api.nvim_win_set_config(win, window_config(current.opts))
       end
     end,
   })
   api.nvim_create_autocmd("WinClosed", {
     group = current.group,
-    pattern = tostring(current.win),
-    callback = function()
-      schedule_dispose(current)
+    callback = function(event)
+      if current.win == tonumber(event.match) then
+        current.win = nil
+        current.return_win = nil
+      end
     end,
   })
-  api.nvim_create_autocmd({ "BufHidden", "BufWipeout" }, {
+  api.nvim_create_autocmd("BufHidden", {
+    group = current.group,
+    buffer = current.buf,
+    callback = function()
+      current.win = nil
+      current.return_win = nil
+    end,
+  })
+  api.nvim_create_autocmd({ "BufUnload", "BufWipeout" }, {
     group = current.group,
     buffer = current.buf,
     callback = function()
       schedule_dispose(current)
     end,
   })
+  api.nvim_create_autocmd("VimLeavePre", {
+    group = current.group,
+    callback = function()
+      dispose(current)
+    end,
+  })
   for _, key in ipairs({ "q", "<Esc>" }) do
-    vim.keymap.set("n", key, M.close, { buffer = current.buf, silent = true, desc = "Close yt-tui window" })
+    vim.keymap.set("n", key, function()
+      if session == current then
+        M.hide()
+      end
+    end, { buffer = current.buf, silent = true, desc = "Hide yt-tui window" })
   end
   vim.bo[current.buf].filetype = "yt-tui"
-  vim.cmd.startinsert()
+  if current.closed or current.closing or not api.nvim_buf_is_valid(current.buf) then
+    dispose(current)
+    return false
+  end
+  if owned_window(current) and api.nvim_get_current_buf() == current.buf and current.running then
+    vim.cmd.startinsert()
+  end
   return true
+end
+
+---Hide the floating terminal without stopping its process.
+---@return boolean
+function M.hide()
+  return not session or hide_window(session)
+end
+
+---Close the floating terminal and stop its process.
+function M.close()
+  if session then
+    dispose(session)
+  end
+end
+
+---Open, resume, or focus the existing terminal, including retained error output.
+---@param args? string[] Arguments appended to the configured defaults.
+---@return boolean
+function M.open(args)
+  args = args or {}
+  if not validate_args(args) then
+    return false
+  end
+  if session and not api.nvim_buf_is_valid(session.buf) then
+    dispose(session)
+  end
+  if session then
+    if #args > 0 then
+      notify("a session already exists; use :YtTuiRestart with new arguments", vim.log.levels.WARN)
+      return false
+    end
+    return show(session)
+  end
+  return launch(args)
+end
+
+---Hide a float visible in this tab, otherwise show the same session here.
+---@return boolean
+function M.toggle()
+  local win = session and owned_window(session)
+  if win and api.nvim_win_get_tabpage(win) == api.nvim_get_current_tabpage() then
+    return M.hide()
+  end
+  return M.open()
+end
+
+---Start fresh. A live session asks before discarding unsaved work.
+---True means launched or confirmation requested; the prompt completes later.
+---@param args? string[] Fresh invocation arguments, not the previous issue URL.
+---@param opts? {force?: boolean}
+---@return boolean
+function M.restart(args, opts)
+  args = args or {}
+  opts = opts or {}
+  if type(opts) ~= "table" or (opts.force ~= nil and type(opts.force) ~= "boolean") then
+    notify("restart options must be a table with an optional boolean force")
+    return false
+  end
+  if not preflight(args) then
+    return false
+  end
+  args = vim.deepcopy(args)
+  restart_request = restart_request + 1
+  local request = restart_request
+  local expected = session
+  local function replace()
+    -- Both the prompt and session must still be current. Recheck configuration
+    -- because setup() or the executable may have changed while the prompt waited.
+    if request ~= restart_request or session ~= expected or not preflight(args) then
+      return false
+    end
+    M.close()
+    return launch(args)
+  end
+  if expected and expected.running and not opts.force then
+    vim.ui.select({ "Cancel", "Restart" }, {
+      prompt = "Restart yt-tui? Unsaved work will be discarded.",
+    }, function(choice)
+      if choice == "Restart" then
+        replace()
+      end
+    end)
+    return true
+  end
+  return replace()
 end
 
 return M

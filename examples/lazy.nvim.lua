@@ -3,9 +3,10 @@ return {
     dir = vim.fn.expand("~/Developer/yt-tui.nvim"),
     name = "yt-tui.nvim",
     main = "yt-tui",
-    cmd = { "YtTui", "YtTuiClose" },
+    cmd = { "YtTui", "YtTuiToggle", "YtTuiHide", "YtTuiRestart", "YtTuiClose" },
     keys = {
-      { "<leader>yy", "<cmd>YtTui<cr>", desc = "Open YouTrack" },
+      { "<leader>yt", "<cmd>YtTuiToggle<cr>", desc = "Toggle YouTrack" },
+      { "<leader>yR", "<cmd>YtTuiRestart<cr>", desc = "Restart YouTrack" },
     },
     opts = {},
   },

@@ -33,7 +33,7 @@ and image-heavy documentation instead of trying to reproduce every web screen.
 
 ## Hide/resume implementation plan
 
-Status: planned. Branch: `feature/persistent-session` in `yt-tui.nvim`.
+Status: implemented. Branch: `feature/persistent-session` in `yt-tui.nvim`.
 
 ### User-facing contract
 
@@ -93,6 +93,21 @@ Status: planned. Branch: `feature/persistent-session` in `yt-tui.nvim`.
 
 ### Completion record
 
-Fill in final behavior, validation results, and any deliberate deviations after
-implementation. The historical `implementation-plan.md` describes v0.1.0;
-this plan supersedes its close/reopen lifecycle decisions.
+Implemented the contract above without changing the Go application or its API
+workflow. Reopening from another tab moves the same terminal to the current
+tab; toggling hides any owned float visible in that tab. Buffer unloading,
+as well as deletion, stops the session. Failed output requires explicit
+restart, replacing the old automatic retry behavior so diagnostics are kept.
+
+Validation: all 38 headless tests with real PTY processes pass on Neovim 0.12.4.
+Coverage includes process/buffer/content identity, repeated hide/resume without
+callback leaks, resize and cross-tab movement, restart confirmation and literal
+arguments, hidden exits/failures, stale callbacks, and synchronous Neovim hooks
+that close/restart/repurpose the terminal while it is opening. Tests also verify
+that a nested Neovim process survives hiding and is stopped on explicit close
+or parent-editor exit. Independent lifecycle review, documentation consistency,
+help-tag generation, example Lua parsing, and whitespace checks passed.
+
+The historical `implementation-plan.md` describes v0.1.0; this plan supersedes
+its close/reopen lifecycle decisions. Items 2-8 above remain unimplemented
+proposals; configuring existing quick actions remains separate setup work.

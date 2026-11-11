@@ -10,6 +10,7 @@ vim.o.lines = 40
 vim.cmd("runtime plugin/yt-tui.lua")
 local plugin = require("yt-tui")
 local notices = {}
+local default_select = vim.ui.select
 vim.notify = function(message, level)
   notices[#notices + 1] = { message = message, level = level }
 end
@@ -79,6 +80,48 @@ local function assert_stopped(session)
   end, "terminal process survived closure")
 end
 
+local function assert_running(session)
+  check(api.nvim_buf_is_valid(session.buf), "terminal buffer was discarded")
+  check(vim.b[session.buf].terminal_job_id == session.job, "terminal job changed")
+  check(vim.fn.jobwait({ session.job }, 0)[1] == -1, "terminal job unexpectedly stopped")
+  check(vim.fn.jobpid(session.job) == session.pid, "terminal process changed")
+end
+
+local function assert_hidden(session)
+  check(#vim.fn.win_findbuf(session.buf) == 0, "terminal still has a visible window")
+  assert_running(session)
+end
+
+local function assert_same_session(session)
+  assert_running(session)
+  check(api.nvim_get_current_buf() == session.buf, "resume did not focus the existing terminal")
+  check(#buffers() == 1, "resume created another terminal buffer")
+end
+
+local function output(session)
+  return table.concat(api.nvim_buf_get_lines(session.buf, 0, -1, false), "\n")
+end
+
+local function read_capture(capture)
+  eventually(function()
+    return vim.fn.filereadable(capture) == 1
+  end, "fixture did not capture arguments")
+  return vim.json.decode(table.concat(vim.fn.readfile(capture), "\n"))
+end
+
+local function capture_prompt()
+  local prompt
+  vim.ui.select = function(items, opts, callback)
+    check(prompt == nil, "unexpected duplicate confirmation")
+    prompt = { items = items, opts = opts, answer = callback }
+  end
+  return function()
+    check(prompt ~= nil, "restart did not request confirmation")
+    check(#prompt.items == 2 and prompt.items[1]:lower():find("cancel", 1, true), "confirmation must default to cancel")
+    return prompt
+  end
+end
+
 local function assert_disposed(session)
   eventually(function()
     return not api.nvim_win_is_valid(session.win) and not api.nvim_buf_is_valid(session.buf)
@@ -101,8 +144,9 @@ end
 test("commands and repeated setup", function()
   configure()
   configure()
-  check(vim.fn.exists(":YtTui") == 2, "YtTui command missing")
-  check(vim.fn.exists(":YtTuiClose") == 2, "YtTuiClose command missing")
+  for _, command in ipairs({ "YtTui", "YtTuiClose", "YtTuiHide", "YtTuiToggle", "YtTuiRestart" }) do
+    check(vim.fn.exists(":" .. command) == 2, command .. " command missing")
+  end
   vim.cmd("YtTui")
   local session = current_session()
   vim.cmd("YtTuiClose")
@@ -129,7 +173,7 @@ test("floating window and terminal key passthrough", function()
   for _, mapping in ipairs(normal_maps) do
     closes[mapping.lhs] = true
   end
-  check(closes.q and closes["<Esc>"], "normal-mode close mappings missing")
+  check(closes.q and closes["<Esc>"], "normal-mode hide mappings missing")
   vim.fn.chansend(session.job, "hello from terminal\n")
   eventually(function()
     local content = table.concat(api.nvim_buf_get_lines(session.buf, 0, -1, false), "\n")
@@ -235,23 +279,31 @@ test("successful exit closes the window", function()
   assert_disposed(session)
 end)
 
-test("nonzero exit keeps output and allows a fresh launch", function()
-  configure("failure")
-  plugin.open()
-  local failed = current_session()
+test("nonzero exit keeps output until explicit restart", function()
+  local failed = start()
+  vim.fn.chansend(failed.job, "fail\n")
   assert_stopped(failed)
   check(api.nvim_buf_is_valid(failed.buf) and api.nvim_win_is_valid(failed.win), "error output was discarded")
-  local output = table.concat(api.nvim_buf_get_lines(failed.buf, 0, -1, false), "\n")
-  check(output:find("YT_FIXTURE_FAILED", 1, true), "failure output is missing")
-  local replacement = start()
-  check(replacement.buf ~= failed.buf, "open did not replace the exited terminal")
+  check(output(failed):find("YT_FIXTURE_FAILED", 1, true), "failure output is missing")
+  plugin.open()
+  check(api.nvim_get_current_buf() == failed.buf, "open silently discarded failure output")
+  local capture = configure()
+  plugin.restart()
+  local replacement = current_session()
+  read_capture(capture)
+  check(replacement.buf ~= failed.buf, "restart did not replace the exited terminal")
   assert_disposed(failed)
 end)
 
-test("external window close stops the process", function()
+test("external window close hides the process and immediate reopen is safe", function()
   local session = start()
   api.nvim_win_close(session.win, true)
-  assert_disposed(session)
+  assert_hidden(session)
+  plugin.open()
+  local resumed = api.nvim_get_current_win()
+  vim.wait(50, function() return false end, 10)
+  assert_same_session(session)
+  check(api.nvim_win_is_valid(resumed), "old window callback closed the resumed float")
 end)
 
 test("external buffer deletion stops the process", function()
@@ -260,33 +312,41 @@ test("external buffer deletion stops the process", function()
   assert_disposed(session)
 end)
 
-test("replacing the terminal buffer stops the process and preserves the new buffer", function()
+test("replacing the terminal buffer hides it and preserves the repurposed window", function()
   local session = start()
   vim.cmd("enew")
   local replacement = api.nvim_get_current_buf()
-  eventually(function()
-    return not api.nvim_buf_is_valid(session.buf)
-  end, "hidden terminal buffer leaked")
-  assert_stopped(session)
+  assert_hidden(session)
   check(api.nvim_win_is_valid(session.win), "plugin closed a repurposed window")
   check(api.nvim_win_get_buf(session.win) == replacement, "plugin removed the replacement buffer")
+  plugin.open()
+  assert_same_session(session)
+  check(api.nvim_get_current_win() ~= session.win, "plugin took over a repurposed window")
+  close()
+  assert_stopped(session)
+  check(api.nvim_win_is_valid(session.win), "cleanup closed a repurposed window")
+  check(api.nvim_win_get_buf(session.win) == replacement, "cleanup removed the replacement buffer")
   api.nvim_win_close(session.win, true)
   api.nvim_buf_delete(replacement, { force = true })
 end)
 
-test("normal-mode q closes the terminal", function()
+test("normal-mode q hides the terminal", function()
   local session = start()
   vim.cmd("stopinsert")
   vim.cmd("normal q")
-  assert_disposed(session)
+  assert_hidden(session)
+  plugin.open()
+  assert_same_session(session)
 end)
 
-test("normal-mode Escape closes the terminal", function()
+test("normal-mode Escape hides the terminal", function()
   local session = start()
   vim.cmd("stopinsert")
   local escape = api.nvim_replace_termcodes("<Esc>", true, false, true)
   api.nvim_feedkeys(escape, "mx", false)
-  assert_disposed(session)
+  assert_hidden(session)
+  plugin.open()
+  assert_same_session(session)
 end)
 
 test("old exit callbacks do not close a replacement session", function()
@@ -306,6 +366,352 @@ test("old exit callbacks do not close a replacement session", function()
   assert_disposed(second)
 end)
 
+test("repeated hide and resume retain process, output, and event handlers", function()
+  local original = api.nvim_get_current_win()
+  local baseline = #api.nvim_get_autocmds({})
+  local session = start()
+  local active = #api.nvim_get_autocmds({})
+  vim.fn.chansend(session.job, "draft still here\n")
+  eventually(function()
+    return output(session):find("YT_FIXTURE_INPUT: draft still here", 1, true) ~= nil
+  end, "fixture did not retain draft text")
+  for _ = 1, 8 do
+    vim.cmd("YtTuiHide")
+    assert_hidden(session)
+    check(api.nvim_get_current_win() == original, "hide did not return to original window")
+    plugin.hide()
+    vim.cmd("YtTui")
+    assert_same_session(session)
+    check(output(session):find("YT_FIXTURE_INPUT: draft still here", 1, true), "resume lost terminal content")
+    check(#api.nvim_get_autocmds({}) == active, "hide/resume leaked event handlers")
+  end
+  close()
+  assert_disposed(session)
+  check(#api.nvim_get_autocmds({}) == baseline, "close leaked event handlers")
+end)
+
+test("toggle hides visible session without stealing focus and resumes it", function()
+  local original = api.nvim_get_current_win()
+  local session = start()
+  api.nvim_set_current_win(original)
+  vim.cmd("YtTuiToggle")
+  assert_hidden(session)
+  check(api.nvim_get_current_win() == original, "toggle stole focus while hiding")
+  vim.cmd("YtTuiToggle")
+  assert_same_session(session)
+  close()
+  vim.cmd("YtTuiToggle")
+  local fresh = current_session()
+  check(fresh.job ~= session.job, "toggle did not start after a closed session")
+end)
+
+test("resume uses current dimensions after resize while hidden", function()
+  local session = start({ width = 0.6, height = 0.5 })
+  local before = api.nvim_win_get_config(session.win)
+  plugin.hide()
+  vim.o.columns = 160
+  vim.o.lines = 50
+  api.nvim_exec_autocmds("VimResized", {})
+  assert_hidden(session)
+  plugin.open()
+  assert_same_session(session)
+  local after = api.nvim_win_get_config(api.nvim_get_current_win())
+  check(after.width > before.width and after.height > before.height, "resumed float used stale dimensions")
+end)
+
+test("resume moves the same session into the current tab", function()
+  local first_tab = api.nvim_get_current_tabpage()
+  local original = api.nvim_get_current_win()
+  local session = start()
+  vim.cmd("tabnew")
+  local second_tab = api.nvim_get_current_tabpage()
+  local second_code = api.nvim_get_current_win()
+  plugin.toggle()
+  assert_same_session(session)
+  check(api.nvim_get_current_tabpage() == second_tab, "resume jumped to the old tab")
+  check(not api.nvim_win_is_valid(session.win), "old tab retained another float")
+  plugin.hide()
+  check(api.nvim_get_current_win() == second_code, "hide did not return to this tab's code window")
+  api.nvim_set_current_tabpage(first_tab)
+  check(api.nvim_win_is_valid(original), "moving float closed original code window")
+  vim.cmd("tabclose")
+  check(api.nvim_get_current_tabpage() == second_tab, "closing old tab changed target tab")
+  plugin.open()
+  assert_same_session(session)
+end)
+
+test("hidden terminal buffer deletion stops the process", function()
+  local session = start()
+  plugin.hide()
+  api.nvim_buf_delete(session.buf, { force = true })
+  assert_disposed(session)
+end)
+
+test("hidden successful exit cleans up without changing code focus", function()
+  local original = api.nvim_get_current_win()
+  local session = start()
+  plugin.hide()
+  vim.fn.chansend(session.job, "exit\n")
+  assert_disposed(session)
+  check(api.nvim_get_current_win() == original, "hidden exit stole focus")
+end)
+
+test("hidden failure retains inspectable output without reopening itself", function()
+  local original = api.nvim_get_current_win()
+  local session = start()
+  plugin.hide()
+  local count = #notices
+  vim.fn.chansend(session.job, "fail\n")
+  assert_stopped(session)
+  eventually(function() return #notices > count end, "hidden failure was not reported")
+  check(api.nvim_get_current_win() == original, "hidden failure stole focus")
+  check(#vim.fn.win_findbuf(session.buf) == 0, "hidden failure opened a window")
+  check(output(session):find("YT_FIXTURE_FAILED", 1, true), "hidden failure output lost")
+  vim.cmd("stopinsert")
+  plugin.open()
+  check(api.nvim_get_current_buf() == session.buf, "resume discarded failed session")
+  check(api.nvim_get_mode().mode ~= "t", "failed terminal reopened in terminal mode")
+  plugin.hide()
+  close()
+  assert_disposed(session)
+end)
+
+test("restart cancellation keeps live hidden session and draft", function()
+  local session = start(nil, { "https://example.invalid/issue/DEMO-1" })
+  plugin.hide()
+  local prompt = capture_prompt()
+  vim.cmd("YtTuiRestart")
+  local pending = prompt()
+  assert_hidden(session)
+  pending.answer(pending.items[1], 1)
+  assert_hidden(session)
+  plugin.open()
+  assert_same_session(session)
+end)
+
+test("confirmed restart starts fresh without reusing invocation URL", function()
+  local session = start(nil, { "https://example.invalid/issue/DEMO-1" })
+  plugin.hide()
+  local capture = configure()
+  local prompt = capture_prompt()
+  vim.cmd("YtTuiRestart")
+  local pending = prompt()
+  pending.answer(pending.items[2], 2)
+  local fresh = current_session()
+  check(fresh.job ~= session.job and fresh.buf ~= session.buf, "restart reused old session")
+  check(vim.deep_equal(read_capture(capture), {}), "restart reused the previous issue URL")
+  assert_disposed(session)
+end)
+
+test("restart command bang bypasses confirmation and forwards new URL", function()
+  local session = start()
+  local capture = configure()
+  vim.ui.select = function() error("forced restart unexpectedly prompted") end
+  local url = "https://example.invalid/issue/DEMO-2"
+  vim.cmd("YtTuiRestart! " .. url)
+  local fresh = current_session()
+  check(fresh.job ~= session.job, "bang restart kept old job")
+  check(vim.deep_equal(read_capture(capture), { url }), "bang restart lost explicit URL")
+  assert_disposed(session)
+end)
+
+test("restart preserves configured defaults and literal argument boundaries", function()
+  local session = start()
+  local capture = temp .. "/restart-literal.json"
+  local marker = temp .. "/restart-shell-must-not-run"
+  plugin.setup({ executable = python, args = { fixture, "hold", capture, "configured default" } })
+  local args = { "literal spaces", "$(touch " .. marker .. ")", "; touch " .. marker }
+  plugin.restart(args, { force = true })
+  local expected = { "configured default" }
+  vim.list_extend(expected, args)
+  check(vim.deep_equal(read_capture(capture), expected), "restart changed configured or literal arguments")
+  check(vim.fn.filereadable(marker) == 0, "restart evaluated shell arguments")
+  assert_disposed(session)
+end)
+
+test("invalid restart preflight preserves existing session", function()
+  local session = start()
+  vim.ui.select = function() error("invalid restart unexpectedly prompted") end
+  check(plugin.restart({ 123 }, { force = true }) == false, "invalid args were accepted")
+  assert_same_session(session)
+  plugin.setup({ executable = temp .. "/does-not-exist" })
+  check(plugin.restart() == false, "missing executable was accepted")
+  assert_same_session(session)
+end)
+
+test("restart revalidates configuration after confirmation", function()
+  local session = start()
+  local prompt = capture_prompt()
+  plugin.restart()
+  local pending = prompt()
+  plugin.setup({ executable = temp .. "/no-longer-exists" })
+  pending.answer(pending.items[2], 2)
+  assert_same_session(session)
+end)
+
+test("pending restart cannot replace a newer session", function()
+  local first = start()
+  local prompt = capture_prompt()
+  plugin.restart()
+  local pending = prompt()
+  plugin.close()
+  local replacement = start()
+  pending.answer(pending.items[2], 2)
+  assert_same_session(replacement)
+  assert_disposed(first)
+end)
+
+test("a newer restart prompt invalidates an older prompt", function()
+  local session = start()
+  local first_prompt = capture_prompt()
+  plugin.restart()
+  local first = first_prompt()
+  local second_prompt = capture_prompt()
+  plugin.restart()
+  local second = second_prompt()
+  first.answer(first.items[2], 2)
+  assert_same_session(session)
+  second.answer(second.items[1], 1)
+  assert_same_session(session)
+end)
+
+test("explicit stop terminates a hidden nested editor process", function()
+  local capture = configure("nested")
+  plugin.open({ vim.v.progpath })
+  local session = current_session()
+  eventually(function() return vim.fn.filereadable(capture .. ".child-pid") == 1 end, "nested editor did not start")
+  local child_pid = tonumber(vim.fn.readfile(capture .. ".child-pid")[1])
+  plugin.hide()
+  assert_hidden(session)
+  check(vim.uv.kill(child_pid, 0) == 0, "hide stopped nested editor")
+  plugin.open()
+  assert_same_session(session)
+  close()
+  assert_disposed(session)
+  local stopped = vim.wait(3000, function() return vim.uv.kill(child_pid, 0) == nil end, 10)
+  if not stopped then vim.uv.kill(child_pid, 15) end
+  check(stopped, "explicit stop left nested editor running")
+end)
+
+test("quitting parent Neovim cleans up hidden session and nested editor", function()
+  local capture = temp .. "/shutdown.json"
+  local result = vim.system({
+    vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE",
+    "-c", 'lua dofile(vim.env.YT_TUI_TEST_ROOT .. "/tests/shutdown.lua")',
+  }, { env = { YT_TUI_TEST_ROOT = root, YT_TUI_SHUTDOWN_CAPTURE = capture }, text = true }):wait(10000)
+  check(result.code == 0, "parent shutdown probe failed: " .. (result.stderr or ""))
+  for _, suffix in ipairs({ ".pid", ".child-pid" }) do
+    check(vim.fn.filereadable(capture .. suffix) == 1, "shutdown probe did not launch process " .. suffix)
+    local pid = tonumber(vim.fn.readfile(capture .. suffix)[1])
+    local stopped = vim.wait(3000, function() return vim.uv.kill(pid, 0) == nil end, 10)
+    if not stopped then vim.uv.kill(pid, 15) end
+    check(stopped, "quitting parent left a process running: " .. suffix)
+  end
+end)
+
+test("TermOpen closure stops the job returned after its callback", function()
+  local baseline = #api.nvim_get_autocmds({})
+  local observed
+  configure()
+  api.nvim_create_autocmd("TermOpen", {
+    once = true,
+    callback = function(event)
+      local job = vim.b[event.buf].terminal_job_id
+      observed = { buf = event.buf, win = api.nvim_get_current_win(), job = job, pid = vim.fn.jobpid(job) }
+      jobs[#jobs + 1] = observed
+      plugin.close()
+    end,
+  })
+  check(plugin.open() == false, "open reported success after TermOpen closed it")
+  check(observed ~= nil, "TermOpen callback did not run")
+  assert_disposed(observed)
+  check(#api.nvim_get_autocmds({}) == baseline, "TermOpen closure leaked handlers")
+end)
+
+test("TermOpen restart leaves only the replacement process", function()
+  local original
+  local replacement_capture
+  configure()
+  api.nvim_create_autocmd("TermOpen", {
+    once = true,
+    callback = function(event)
+      local job = vim.b[event.buf].terminal_job_id
+      original = { buf = event.buf, win = api.nvim_get_current_win(), job = job, pid = vim.fn.jobpid(job) }
+      jobs[#jobs + 1] = original
+      replacement_capture = configure()
+      plugin.restart({}, { force = true })
+    end,
+  })
+  check(plugin.open() == false, "superseded open reported success")
+  check(original ~= nil, "TermOpen callback did not run")
+  local replacement = current_session()
+  read_capture(replacement_capture)
+  check(replacement.job ~= original.job, "TermOpen restart retained original job")
+  assert_disposed(original)
+  assert_same_session(replacement)
+end)
+
+test("FileType closure stops the initialized process without leaked handlers", function()
+  local baseline = #api.nvim_get_autocmds({})
+  local observed
+  configure()
+  api.nvim_create_autocmd("FileType", {
+    pattern = "yt-tui",
+    once = true,
+    callback = function()
+      observed = current_session()
+      plugin.close()
+    end,
+  })
+  check(plugin.open() == false, "open reported success after FileType closed it")
+  check(observed ~= nil, "FileType callback did not run")
+  assert_disposed(observed)
+  check(#api.nvim_get_autocmds({}) == baseline, "FileType closure leaked handlers")
+end)
+
+test("BufEnter replacement on resume keeps the repurposed float untouched", function()
+  local session = start()
+  plugin.hide()
+  local replacement = api.nvim_create_buf(false, true)
+  local repurposed
+  api.nvim_create_autocmd("BufEnter", {
+    buffer = session.buf,
+    once = true,
+    callback = function()
+      repurposed = api.nvim_get_current_win()
+      api.nvim_win_set_buf(repurposed, replacement)
+      api.nvim_win_set_config(repurposed, { width = 17 })
+    end,
+  })
+  check(plugin.open() == false, "resume reported success after window was repurposed")
+  check(repurposed ~= nil and api.nvim_win_is_valid(repurposed), "repurposed window was lost")
+  check(api.nvim_win_get_buf(repurposed) == replacement, "resume replaced user buffer")
+  check(api.nvim_win_get_config(repurposed).width == 17, "resume resized a repurposed window")
+  assert_hidden(session)
+  plugin.open()
+  assert_same_session(session)
+  close()
+  check(api.nvim_win_is_valid(repurposed), "cleanup closed a repurposed window")
+  api.nvim_win_close(repurposed, true)
+  api.nvim_buf_delete(replacement, { force = true })
+end)
+
+test("BufEnter closure on resume stops the session without leaking a float", function()
+  local session = start()
+  plugin.hide()
+  local windows = #api.nvim_list_wins()
+  api.nvim_create_autocmd("BufEnter", {
+    buffer = session.buf,
+    once = true,
+    callback = function()
+      plugin.close()
+    end,
+  })
+  check(plugin.open() == false, "resume reported success after BufEnter closed it")
+  assert_disposed(session)
+  check(#api.nvim_list_wins() == windows, "BufEnter closure leaked a float")
+end)
+
 local failures = 0
 for _, case in ipairs(tests) do
   local ok, err = xpcall(case.run, debug.traceback)
@@ -315,6 +721,7 @@ for _, case in ipairs(tests) do
     failures = failures + 1
     print("FAIL " .. case.name .. "\n" .. err)
   end
+  vim.ui.select = default_select
   pcall(close)
   for _, buf in ipairs(buffers()) do
     pcall(api.nvim_buf_delete, buf, { force = true })

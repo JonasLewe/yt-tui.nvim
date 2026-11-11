@@ -6,30 +6,79 @@ INTRODUCTION                                                       *yt-tui*
 yt-tui.nvim runs the yt-tui executable in a centered floating terminal.
 Requires Neovim 0.11+ and yt-tui on PATH (or an explicit executable path).
 The application continues to manage its own credentials and configuration.
+Hide the float to return to code; resume it without losing your place.
 
 COMMANDS                                                   *yt-tui-commands*
 
 :YtTui [arguments]                                                  *:YtTui*
-    Open yt-tui. Arguments are passed directly to the executable, after any
-    configured defaults. An issue URL can be supplied to open it directly.
-    Without arguments, focus an existing running session. Close it before
-    supplying different arguments. If the old process failed, start again.
+    Open, resume, or focus the session in the current tab. Arguments are
+    passed directly to the executable, after configured defaults. An issue
+    URL can be supplied when no session exists. New arguments are rejected
+    while a session exists; use :YtTuiRestart to replace it deliberately.
+    If the process failed, show its retained output in normal mode.
+
+:YtTuiToggle                                                  *:YtTuiToggle*
+    Hide the float if it is visible in the current tab. Otherwise open or
+    resume the same session in the current tab, moving it from another tab
+    if necessary. There is only one session, not one process per tab.
+
+:YtTuiHide                                                      *:YtTuiHide*
+    Hide the float without stopping the process or deleting its buffer.
+    Safe to call when already hidden or when no session exists.
+
+:YtTuiRestart[!] [arguments]                                  *:YtTuiRestart*
+    Start fresh using the configured executable/default arguments, followed
+    by the supplied arguments. The previous invocation's arguments, such
+    as an issue URL, are not reused. Without arguments, this uses normal
+    yt-tui startup; server selection or login may precede the dashboard.
+    Configured default arguments still apply, including any default URL.
+
+    If a session is running, ask before discarding it and its unsaved work.
+    Cancel is the first choice. Add ! to skip confirmation deliberately.
+    The launch configuration is checked before stopping the old process.
+    No confirmation is needed when there is no live process.
 
 :YtTuiClose                                                    *:YtTuiClose*
-    Stop the process and close its window and buffer.
+    Stop the process and release its window, buffer, and callbacks.
+    This keeps the original close() behavior; use Hide to keep your place.
 
 KEYS                                                           *yt-tui-keys*
 
 The plugin sets no global mappings. The example lazy.nvim configuration maps
-<leader>yy to :YtTui.
+<leader>yt to :YtTuiToggle and <leader>yR to :YtTuiRestart in normal mode.
 
-Terminal-mode keys go to yt-tui. Use CTRL-\ CTRL-N to leave terminal mode,
-then q or <Esc> to close the floating terminal. Closing stops the process;
-reopening starts a fresh session. Successful exits close automatically.
-Unsuccessful exits retain their terminal output for inspection.
+Use CTRL-\ CTRL-N to leave terminal mode, then q or <Esc> to hide the float.
+From code, use <leader>yt to resume. These hide keys belong to terminal NORMAL
+mode. In terminal mode, keys go to yt-tui or its nested editor: Escape keeps
+its application behavior, and application quit keys (q on the dashboard or
+CTRL-C) end the session. Leader sequences are not intercepted in terminal
+mode, so they remain usable when typing into the application or its editor.
 
 The buffer sets b:terminal_passthrough before TermOpen. User configurations
 can check this flag when installing terminal mappings such as kj.
+
+LIFECYCLE                                                 *yt-tui-lifecycle*
+
+Hiding retains the same process and buffer, including the current issue,
+pane, filters, scroll position, and draft. An external window closure or
+replacement of the float's buffer also hides the session. Explicit terminal
+buffer deletion and :YtTuiClose stop it. Repurposed windows are left intact.
+
+The float resizes with Neovim and uses the current size when resumed. Opening
+from another tab moves the same session to the current tab. A successful
+process exit cleans up even while hidden. A failed process retains output;
+open it with :YtTui, then use :YtTuiRestart to retry or :YtTuiClose to discard
+it. A hidden failure does not open a window or steal focus.
+
+Hiding does not pause work or save drafts to disk. Sessions last only for the
+current parent Neovim process. Showing a session does not refresh server
+data; use yt-tui's existing r action to refresh when needed.
+
+The process inherits Neovim's working directory and environment at launch.
+Resume keeps that process. A fresh start uses the current working directory
+and latest setup. External editors launched by yt-tui run inside its terminal.
+If hidden while a nested editor is open, it remains open when resumed. Exit
+that editor to return to yt-tui. There is no parent-editor bridge yet.
 
 CONFIGURATION                                                *yt-tui-setup*
 >
@@ -43,27 +92,42 @@ CONFIGURATION                                                *yt-tui-setup*
     })
 <
 width and height are fractions greater than zero and at most one. The window
-is centered and resizes with Neovim. border accepts built-in border style
-names such as rounded, single, double, solid, shadow, and none. Highlights
-follow the active colorscheme.
+is centered. border accepts built-in border style names such as rounded,
+single, double, solid, shadow, and none. Highlights follow the colorscheme.
 
 executable is a single executable name or path, without flags. Use
-vim.fn.expand() for paths containing ~. args is a list of strings. Arguments
-are never evaluated by a shell.
+vim.fn.expand() for paths containing ~. args is a list of default arguments;
+arguments passed to open or restart are appended for a fresh launch. The
+argument vector is never evaluated by a shell.
 
 Calling setup again resets unspecified options to defaults. Changes apply
-to the next session. Setup is optional when using the defaults.
+to the next fresh session, not a running or hidden session. Setup is optional
+when using the defaults.
 
 LUA API                                                        *yt-tui-api*
 >
     require("yt-tui").open()
     require("yt-tui").open({ "https://youtrack.example.com/issue/PROJ-123" })
+    require("yt-tui").hide()
+    require("yt-tui").toggle()
+    require("yt-tui").restart()
+    require("yt-tui").restart({}, { force = true })
     require("yt-tui").close()
 <
-open returns true on launch/focus, or false after notifying about a failure.
+open(args), hide(), and toggle() return a boolean indicating success. hide
+also succeeds when already hidden or no session exists. close has no return
+value contract.
 
-The process inherits Neovim's working directory and environment. External
-editors launched by yt-tui run inside its terminal; exit the editor to return
-to yt-tui. There is no remote-editor bridge or hidden-session persistence.
+restart(args, opts) returns true after a successful launch OR after requesting
+confirmation; an asynchronous confirmation can still be cancelled. It returns
+false for an immediate validation or launch failure. opts.force skips the
+confirmation. Arguments default to an empty list; opts defaults to a table
+with no forced restart.
+
+PLANNING                                                  *yt-tui-planning*
+
+docs/workflow-roadmap.md records proposed additions and the hide/resume plan.
+docs/implementation-plan.md is the historical v0.1.0 plan. The roadmap
+supersedes that plan's close/reopen lifecycle decisions.
 
 vim:tw=78:ts=8:noet:ft=help:norl:
