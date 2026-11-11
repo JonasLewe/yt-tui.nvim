@@ -1,6 +1,6 @@
 # yt-tui.nvim
 
-Open [yt-tui](https://github.com/nospor/yt-tui) in a centered Neovim floating terminal. Browse and edit YouTrack issues using the same executable and configuration as your shell.
+Open [yt-tui](https://github.com/JonasLewe/yt-tui) in a centered Neovim floating terminal. Browse and edit YouTrack issues using the same executable and configuration as your shell. This is a separate Lua plugin for the Go application, which is based on [nospor/yt-tui](https://github.com/nospor/yt-tui).
 
 ## Requirements
 
@@ -8,14 +8,15 @@ Open [yt-tui](https://github.com/nospor/yt-tui) in a centered Neovim floating te
 - `yt-tui` installed on Neovim's `PATH`, or an explicit `executable` path in setup.
 
 There are no Lua plugin dependencies. Credentials remain managed by `yt-tui`.
+Install the [Go executable separately](https://github.com/JonasLewe/yt-tui#-build-this-fork-from-source); installing this plugin does not build or download it. The linked fork includes the browsing `q`/`Q` integration described below.
 
 ## Install with lazy.nvim
 
-Keep this repository at `~/Developer/yt-tui.nvim` and add the following specification to your lazy.nvim configuration:
+Add the following specification to your lazy.nvim configuration:
 
 ```lua
 return {
-  dir = vim.fn.expand("~/Developer/yt-tui.nvim"),
+  "JonasLewe/yt-tui.nvim",
   name = "yt-tui.nvim",
   main = "yt-tui",
   cmd = { "YtTui", "YtTuiToggle", "YtTuiHide", "YtTuiRestart", "YtTuiClose" },
@@ -28,6 +29,8 @@ return {
 ```
 
 [examples/lazy.nvim.lua](examples/lazy.nvim.lua) also adds a YouTrack group to an existing which-key configuration. The core plugin does not assign global mappings; the specification above supplies `<leader>yt` and `<leader>yy` in normal mode.
+
+For local development, replace `"JonasLewe/yt-tui.nvim"` with `dir = vim.fn.expand("~/Developer/yt-tui.nvim")` to use your checkout instead of the GitHub copy.
 
 For another plugin manager, put the repository on `runtimepath` and call `require("yt-tui").setup({})`. Commands also work with defaults without calling setup.
 

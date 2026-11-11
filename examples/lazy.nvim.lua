@@ -1,6 +1,6 @@
 return {
   {
-    dir = vim.fn.expand("~/Developer/yt-tui.nvim"),
+    "JonasLewe/yt-tui.nvim",
     name = "yt-tui.nvim",
     main = "yt-tui",
     cmd = { "YtTui", "YtTuiToggle", "YtTuiHide", "YtTuiRestart", "YtTuiClose" },
