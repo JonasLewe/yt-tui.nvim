@@ -249,6 +249,7 @@ local function launch(args)
   current.running = true
   local started, job = pcall(vim.fn.jobstart, command, {
     term = true,
+    env = { YT_TUI_NVIM_HIDE = "1" },
     on_exit = function(_, code)
       current.running = false
       vim.schedule(function()
@@ -287,6 +288,28 @@ local function launch(args)
 
   -- Register after jobstart: creating a terminal initially renames its buffer.
   current.group = api.nvim_create_augroup("YtTuiTerminal" .. current.buf, { clear = true })
+  api.nvim_create_autocmd("TermRequest", {
+    group = current.group,
+    buffer = current.buf,
+    callback = function(event)
+      if not event.data or event.data.sequence ~= "\27]777;yt-tui;hide" then
+        return
+      end
+      local win = owned_window(current)
+      if not win then
+        return
+      end
+      -- The application knows when q means hide instead of typed text. Defer
+      -- window changes outside the terminal event, rejecting stale requests.
+      vim.schedule(function()
+        if session == current and not current.closed and not current.closing
+          and current.running and owned_window(current) == win
+        then
+          hide_window(current)
+        end
+      end)
+    end,
+  })
   api.nvim_create_autocmd("VimResized", {
     group = current.group,
     callback = function()
@@ -333,6 +356,11 @@ local function launch(args)
       end
     end, { buffer = current.buf, silent = true, desc = "Hide yt-tui window" })
   end
+  vim.keymap.set("n", "Q", function()
+    if session == current then
+      M.close()
+    end
+  end, { buffer = current.buf, silent = true, desc = "Quit yt-tui" })
   if current.opts.hide_key then
     -- Opt in to one outer-window gesture without consuming editor escape keys
     -- or printable leader sequences inside yt-tui and its nested editor.

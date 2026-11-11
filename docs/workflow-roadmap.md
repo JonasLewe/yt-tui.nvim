@@ -40,14 +40,15 @@ Status: implemented. Branch: `feature/persistent-session` in `yt-tui.nvim`.
 - `:YtTui [arguments]` / `open(args)` opens, resumes, or focuses the one existing
   session. New arguments must never silently replace a live session.
 - `:YtTuiToggle` / `toggle()` hides a visible float or resumes the existing
-  hidden session. The user's `<leader>yt` maps to this action.
+  hidden session. The user's `<leader>yy` maps to this action.
 - `:YtTuiHide` / `hide()` and terminal-normal-mode `q`/Escape hide the window.
   They retain the terminal buffer and process. An optional buffer-local
-  `hide_key` can hide directly from terminal mode; other keys continue to
-  belong to yt-tui and any nested editor; no leader sequence is intercepted.
+  `hide_key` can hide directly from terminal mode. With a compatible TUI,
+  browsing `q` requests hide and `Q` fully quits. Forms, searches, and the
+  nested editor keep their normal input; no leader sequence is intercepted.
 - `:YtTuiRestart[!] [arguments]` / `restart(args, opts)` intentionally starts
   fresh. With a live session, ask before discarding it; cancellation is the
-  default. `!` / `{ force = true }` is the explicit opt-out. `<leader>yR` uses
+  default. `!` / `{ force = true }` is the explicit opt-out. `<leader>yt` uses
   the confirming command. Validate the launch configuration before stopping.
 - Restart without arguments does not reuse a previous invocation's issue URL.
   It uses configured executable/default arguments and normal yt-tui startup.
@@ -94,8 +95,8 @@ Status: implemented. Branch: `feature/persistent-session` in `yt-tui.nvim`.
 
 ### Completion record
 
-Implemented the contract above without changing the Go application or its API
-workflow. Reopening from another tab moves the same terminal to the current
+The initial hide/resume implementation did not change the Go application.
+The later q/Q integration below adds application-aware quitting controls. Reopening from another tab moves the same terminal to the current
 tab; toggling hides any owned float visible in that tab. Buffer unloading,
 as well as deletion, stops the session. Failed output requires explicit
 restart, replacing the old automatic retry behavior so diagnostics are kept.
@@ -114,12 +115,13 @@ The historical `implementation-plan.md` describes v0.1.0; this plan supersedes
 its close/reopen lifecycle decisions. Items 2-8 above remain unimplemented
 proposals; configuring existing quick actions remains separate setup work.
 
-### Keymap refinement (2026-11-11)
+### Earlier keymap refinement (2026-11-11, superseded)
 
-The native terminal-mode escape was awkward on the user's keyboard. Enable
-`hide_key = "<C-w>q"` in the local configuration and lazy.nvim examples: press
-Ctrl+w, then q to hide directly, following Vim's window-close convention.
-`<leader>yt` resumes and `<leader>yR` starts fresh as before.
+The native terminal-mode escape was awkward on the user's keyboard. The first
+refinement enabled `hide_key = "<C-w>q"` in the local configuration and examples
+for direct hiding with Vim's window-close gesture. At that point `<leader>yt`
+resumed and `<leader>yR` started fresh. The preferred controls below replace
+that setup; the optional `hide_key` setting remains supported.
 
 The plugin option defaults to `false` and accepts a nonempty key sequence when
 enabled. Its mapping is local to the session's terminal buffer in terminal and
@@ -134,3 +136,29 @@ Refinement validation: all 41 tests pass. The added checks drive real terminal
 input through a separate Neovim instance and capture raw PTY bytes, verifying
 direct hide/resume, unchanged process identity, ordinary-key passthrough,
 alternative/disabled mappings, and rejected invalid configuration.
+
+### Preferred quit controls (2026-11-11)
+
+The user requested `q`/`Q` for the two exit modes and reassigned the leader
+keys. The current workflow supersedes the earlier Ctrl+w, q recommendation:
+
+- Browsing `q` hides and preserves the session; `Q` fully quits it.
+- `<leader>yt` starts fresh through the existing confirming restart action.
+- `<leader>yy` toggles/resumes the float. The old `<leader>yR` example is removed.
+- Forms, search inputs, and nested editors receive literal letters. Close an
+  active menu or finish/cancel editing before using browsing quit controls.
+- Neovim terminal-normal-mode `q`/Escape hides; `Q` explicitly stops the process.
+- The optional `hide_key` setting remains available, disabled by default. It is
+  removed from the local setup and examples because browsing `q` now hides.
+
+Implementation belongs on `feature/nvim-quit-controls` in the TUI and plugin
+repositories. The TUI decides when quitting keys are active and sends a fixed
+hide request only when launched by the plugin. The plugin does not map terminal
+letters, parse screen contents, or interfere with the external editor. This
+requires the matching TUI build; older binaries continue to quit on `q`.
+The existing hide/resume, restart confirmation, and Lua command API stay intact.
+
+Plugin validation: all 45 tests pass, including real terminal q/Q input,
+ordinary typing, process identity across hide/resume, child-only capability
+environment, unrelated control sequences, stale-window/session requests, and
+cleanup after a full quit. Documentation and independent runtime review passed.

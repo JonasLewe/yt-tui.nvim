@@ -5,10 +5,10 @@ return {
     main = "yt-tui",
     cmd = { "YtTui", "YtTuiToggle", "YtTuiHide", "YtTuiRestart", "YtTuiClose" },
     keys = {
-      { "<leader>yt", "<cmd>YtTuiToggle<cr>", desc = "Toggle YouTrack" },
-      { "<leader>yR", "<cmd>YtTuiRestart<cr>", desc = "Restart YouTrack" },
+      { "<leader>yt", "<cmd>YtTuiRestart<cr>", desc = "Start YouTrack fresh" },
+      { "<leader>yy", "<cmd>YtTuiToggle<cr>", desc = "Toggle YouTrack" },
     },
-    opts = { hide_key = "<C-w>q" },
+    opts = {},
   },
   {
     "folke/which-key.nvim",

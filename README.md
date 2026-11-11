@@ -20,14 +20,14 @@ return {
   main = "yt-tui",
   cmd = { "YtTui", "YtTuiToggle", "YtTuiHide", "YtTuiRestart", "YtTuiClose" },
   keys = {
-    { "<leader>yt", "<cmd>YtTuiToggle<cr>", desc = "Toggle YouTrack" },
-    { "<leader>yR", "<cmd>YtTuiRestart<cr>", desc = "Restart YouTrack" },
+    { "<leader>yt", "<cmd>YtTuiRestart<cr>", desc = "Start YouTrack fresh" },
+    { "<leader>yy", "<cmd>YtTuiToggle<cr>", desc = "Toggle YouTrack" },
   },
-  opts = { hide_key = "<C-w>q" },
+  opts = {},
 }
 ```
 
-[examples/lazy.nvim.lua](examples/lazy.nvim.lua) also adds a YouTrack group to an existing which-key configuration. The core plugin does not assign global mappings; the specification above supplies `<leader>yt` and `<leader>yR` in normal mode.
+[examples/lazy.nvim.lua](examples/lazy.nvim.lua) also adds a YouTrack group to an existing which-key configuration. The core plugin does not assign global mappings; the specification above supplies `<leader>yt` and `<leader>yy` in normal mode.
 
 For another plugin manager, put the repository on `runtimepath` and call `require("yt-tui").setup({})`. Commands also work with defaults without calling setup.
 
@@ -35,21 +35,23 @@ For another plugin manager, put the repository on `runtimepath` and call `requir
 
 | Action | Command or key |
 | --- | --- |
+| Hide while browsing, keeping your place | `q` |
+| Fully quit while browsing | `Q` |
+| Start fresh, asking before discarding a live session | `<leader>yt` with the example configuration, or `:YtTuiRestart` |
+| Toggle the float, resuming your existing session | `<leader>yy` with the example configuration, or `:YtTuiToggle` |
 | Open, resume, or focus YouTrack | `:YtTui` |
-| Toggle between YouTrack and code | `<leader>yt` with the example configuration, or `:YtTuiToggle` |
 | Open an issue directly when no session exists | `:YtTui https://youtrack.example.com/issue/PROJ-123` |
-| Hide directly, keeping your place | `Ctrl+w`, then `q` with the example configuration |
-| Hide from terminal normal mode | `q` or `Esc` |
-| Hide by command, keeping your place | `:YtTuiHide` |
-| Start fresh, asking before discarding a live session | `<leader>yR` with the example configuration, or `:YtTuiRestart` |
+| Hide by command | `:YtTuiHide` |
 | Start fresh without confirmation | `:YtTuiRestart!` |
-| Stop and release the session | `:YtTuiClose` |
+| Stop and release the session by command | `:YtTuiClose` |
 
-With the example configuration, press **`Ctrl+w`, then `q`** to hide the float directly, using Vim's window-close convention. Press `<leader>yt` from code to resume, or `<leader>yR` to start fresh. You do not need to leave terminal mode first.
+While browsing yt-tui, press **`q` to hide** or **`Q` to fully quit**. From your code, `<leader>yy` toggles the float and resumes your place; `<leader>yt` starts fresh. No terminal-mode escape is needed.
 
-The configured hide chord belongs to the outer float even while editing in nested Neovim. Other terminal keys pass through: `kj` remains available to your editor, Escape keeps its application behavior, and the application's quit keys (`q` on the dashboard or `Ctrl+C`) end the session. The plugin sets `b:terminal_passthrough` before starting the terminal so user configuration can skip terminal mappings such as `kj`.
+These browsing keys require a compatible yt-tui build with Neovim hide integration. Older yt-tui binaries keep their original quit behavior, so `q` still exits them. Other executables retain their own key handling; the plugin does not turn arbitrary programs' `q` into a hide command.
 
-Without a configured hide key, Neovim's native `Ctrl+\`, then `Ctrl+n` enters terminal normal mode, where `q` or `Esc` hides the float. `:YtTuiHide` is always available.
+The letters remain normal input in forms, searches, and your nested editor. Close an active menu or finish/cancel editing before using the browsing quit keys. The plugin does not intercept printable letters or leader sequences in terminal mode, so your editor's `kj`, Escape, and normal commands keep working. The buffer sets `b:terminal_passthrough` before starting the terminal so user configuration can skip terminal mappings such as `kj`.
+
+If you enter Neovim's terminal normal mode, `q` or `Esc` hides the float and `Q` stops the process. `:YtTuiHide` and `:YtTuiClose` are also always available.
 
 ### Resume or start fresh
 
@@ -79,7 +81,7 @@ require("yt-tui").setup({
 
 `width` and `height` are fractions of the available editor size, greater than zero and at most one. The border uses Neovim's standard floating-window highlights and follows your colorscheme. Set `executable` to a full path if Neovim cannot find the program, for example `vim.fn.expand("~/.local/bin/yt-tui")`.
 
-`hide_key` is an optional nonempty key sequence, such as `"<C-w>q"`, mapped only in this plugin's terminal buffer in terminal and normal modes. It defaults to `false` (disabled); the lazy.nvim examples enable it. Choose another sequence or set `false` to restore full terminal passthrough. A mapping prefix waits for the next key according to Neovim's `timeoutlen`: with `<C-w>q`, pressing `Ctrl+w` alone may briefly wait before reaching the application. The completed hide chord is reserved even in a nested editor.
+`hide_key` is an optional nonempty key sequence, such as `"<C-w>q"`, mapped only in this plugin's terminal buffer in terminal and normal modes. It defaults to `false` (disabled) and is not needed for browsing-mode `q`/`Q`. An enabled key is intercepted regardless of what the child process is doing, so use a deliberate chord rather than printable text. Choose another sequence or set `false` to restore full terminal passthrough. A mapping prefix waits for the next key according to Neovim's `timeoutlen`: with `<C-w>q`, pressing `Ctrl+w` alone may briefly wait before reaching the application. The completed hide chord is reserved even in a nested editor.
 
 `args` is a list of default command-line arguments. Arguments passed to `:YtTui`, `:YtTuiRestart`, or their Lua functions are appended when launching a new process. The executable and arguments are passed as an argument vector, without shell evaluation. Do not put shell commands or extra flags in the `executable` string. Calling `setup()` again changes the next fresh session, not a running or hidden session.
 
@@ -106,5 +108,7 @@ sh tests/run.sh
 ```
 
 The suite requires Neovim and Python 3 and uses a headless editor with fixture processes. It does not require a YouTrack account or contact a YouTrack server.
+
+The plugin sets `YT_TUI_NVIM_HIDE=1` only in its child process environment. A compatible yt-tui emits the fixed OSC request `ESC ]777;yt-tui;hide BEL` when its own browsing handler accepts `q`. The buffer-local `TermRequest` callback matches the exact request and schedules hiding only for the same live session and window. It does not execute payloads or infer input state from terminal text. `Q` exits the application normally. See Neovim's [TermRequest documentation](https://neovim.io/doc/user/autocmd.html#TermRequest).
 
 The current proposals and hide/resume design are recorded in [docs/workflow-roadmap.md](docs/workflow-roadmap.md). The historical [initial implementation plan](docs/implementation-plan.md) describes v0.1.0; the roadmap supersedes its close/reopen behavior.

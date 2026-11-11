@@ -177,16 +177,16 @@ local function captured_input(capture)
   return content
 end
 
-local function start_input_fixture(remote, mode, capture, hide_key)
+local function start_input_fixture(remote, mode, capture, hide_key, fixture_mode)
   remote([[
-    local fixture, capture, hide_key = ...
+    local fixture, capture, hide_key, fixture_mode = ...
     require('yt-tui').setup({
       executable = vim.fn.exepath('python3'),
-      args = { fixture, 'raw', capture },
+      args = { fixture, fixture_mode, capture },
       hide_key = hide_key,
     })
     assert(require('yt-tui').open())
-  ]], { fixture, capture, hide_key })
+  ]], { fixture, capture, hide_key, fixture_mode or "raw" })
   eventually(function()
     return vim.fn.filereadable(capture .. ".raw-ready") == 1
   end, "raw fixture did not start")
@@ -259,6 +259,109 @@ test("invalid hide chord settings preserve the previous configuration", function
   local keys = api.nvim_replace_termcodes("<C-w>q", true, false, true)
   api.nvim_feedkeys(keys, "mx", false)
   assert_hidden(session)
+end)
+
+test("application q hides while Q quits and editing keeps both letters", function()
+  with_input_editor(function(remote, input, mode)
+    remote("vim.env.YT_TUI_NVIM_HIDE = 'outside-plugin'")
+    local capture = temp .. "/application-quit-controls.json"
+    local original = start_input_fixture(remote, mode, capture, false, "quit-controls")
+    check(vim.fn.readfile(capture .. ".host-env")[1] == "1", "child did not receive host capability")
+    check(remote("return vim.env.YT_TUI_NVIM_HIDE") == "outside-plugin", "plugin changed global environment")
+    check(remote("return #vim.api.nvim_buf_get_keymap(0, 't')") == 0, "plugin mapped printable terminal keys")
+    input("eqQkj yy")
+    eventually(function() return captured_input(capture) == "eqQkj yy" end, "editing lost q/Q or ordinary input")
+    mode("t")
+    check(remote("return #vim.fn.win_findbuf(...) == 1", { original.buf }), "editing q/Q hid the application")
+    input("<Esc>q")
+    mode("n")
+    check(remote("return #vim.fn.win_findbuf(...) == 0", { original.buf }), "application q did not hide")
+    check(remote("return vim.fn.jobwait({...}, 0)[1]", { original.job }) == -1, "application q stopped process")
+    remote("assert(require('yt-tui').open())")
+    mode("t")
+    local resumed = remote([[
+      local buf = vim.api.nvim_get_current_buf()
+      local job = vim.b[buf].terminal_job_id
+      return { buf = buf, job = job, pid = vim.fn.jobpid(job) }
+    ]])
+    check(vim.deep_equal(original, resumed), "application hide discarded session state")
+    check(captured_input(capture) == "eqQkj yy\27q", "resume changed captured application state")
+    input("Q")
+    eventually(function()
+      return remote("return not vim.api.nvim_buf_is_valid(...)", { original.buf })
+    end, "application Q did not clean up the terminal")
+    check(remote("return vim.fn.jobwait({...}, 0)[1]", { original.job }) ~= -1, "application Q left process running")
+  end)
+end)
+
+test("raw q/Q and unrelated terminal requests remain untouched", function()
+  with_input_editor(function(remote, input, mode)
+    local capture = temp .. "/raw-quit-controls.json"
+    local original = start_input_fixture(remote, mode, capture, false)
+    input("qQ")
+    eventually(function() return captured_input(capture) == "qQ" end, "raw q/Q were intercepted")
+    mode("t")
+    remote("require('yt-tui').close()")
+    capture = temp .. "/unrelated-terminal-requests.json"
+    original = start_input_fixture(remote, mode, capture, false, "quit-controls")
+    remote([[
+      _G.request_count = 0
+      vim.api.nvim_create_autocmd('TermRequest', {
+        callback = function() _G.request_count = _G.request_count + 1 end,
+      })
+    ]])
+    input("b")
+    eventually(function() return remote("return _G.request_count") == 3 end, "probe OSC sequences were not delivered")
+    check(remote("return #vim.fn.win_findbuf(...) == 1", { original.buf }), "unrelated OSC hid the terminal")
+    remote([[
+      _G.other_terminal = vim.api.nvim_create_buf(false, true)
+      local channel = vim.api.nvim_open_term(_G.other_terminal, {})
+      vim.api.nvim_chan_send(channel, '\27]777;yt-tui;hide\7')
+    ]])
+    eventually(function() return remote("return _G.request_count") == 4 end, "other buffer's request was not delivered")
+    check(remote("return #vim.fn.win_findbuf(...) == 1", { original.buf }), "another terminal hid yt-tui")
+    check(remote("return vim.fn.jobwait({...}, 0)[1]", { original.job }) == -1, "unrelated request stopped process")
+    remote("vim.api.nvim_buf_delete(_G.other_terminal, { force = true })")
+  end)
+end)
+
+test("queued terminal requests cannot hide a resumed window or replacement session", function()
+  local function queued_hide(session)
+    local callbacks = {}
+    local schedule = vim.schedule
+    vim.schedule = function(callback) callbacks[#callbacks + 1] = callback end
+    local ok, err = pcall(api.nvim_exec_autocmds, "TermRequest", {
+      buffer = session.buf,
+      data = { sequence = "\27]777;yt-tui;hide", terminator = "\7" },
+    })
+    vim.schedule = schedule
+    check(ok, err)
+    check(#callbacks == 1, "request did not queue exactly one hide")
+    return callbacks[1]
+  end
+  local first = start()
+  local stale_window = queued_hide(first)
+  plugin.hide()
+  plugin.open()
+  stale_window()
+  assert_same_session(first)
+  local stale_session = queued_hide(first)
+  close()
+  local replacement = start()
+  stale_session()
+  assert_same_session(replacement)
+  assert_disposed(first)
+end)
+
+test("normal-mode Q closes retained failure output", function()
+  configure("failure")
+  plugin.open()
+  local failed = current_session()
+  assert_stopped(failed)
+  check(api.nvim_buf_is_valid(failed.buf), "failed output was not retained")
+  vim.cmd.stopinsert()
+  vim.cmd("normal Q")
+  assert_disposed(failed)
 end)
 
 test("commands and repeated setup", function()
