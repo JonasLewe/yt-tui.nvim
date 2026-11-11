@@ -141,6 +141,126 @@ local function test(name, run)
   tests[#tests + 1] = { name = name, run = run }
 end
 
+-- A separate editor runs its actual input loop while this suite drives it over
+-- built-in RPC. This exercises terminal-mode mappings, not their Lua callbacks.
+local function with_input_editor(run)
+  local editor = vim.fn.jobstart({
+    vim.v.progpath, "--embed", "--headless", "-u", "NONE", "-i", "NONE",
+  }, { rpc = true })
+  check(editor > 0, "could not start input-test editor")
+  local function remote(code, args)
+    return vim.fn.rpcrequest(editor, "nvim_exec_lua", code, args or {})
+  end
+  local function input(keys)
+    return vim.fn.rpcrequest(editor, "nvim_input", keys)
+  end
+  local function mode(expected)
+    eventually(function()
+      return vim.fn.rpcrequest(editor, "nvim_get_mode").mode == expected
+    end, "input-test editor did not enter " .. expected .. " mode")
+  end
+  local ok, err = xpcall(function()
+    remote("vim.opt.runtimepath:prepend(...)", { root })
+    run(remote, input, mode)
+  end, debug.traceback)
+  pcall(remote, "require('yt-tui').close()")
+  pcall(vim.fn.jobstop, editor)
+  vim.fn.jobwait({ editor }, 3000)
+  check(ok, err)
+end
+
+local function captured_input(capture)
+  local file = io.open(capture .. ".input", "rb")
+  if not file then return "" end
+  local content = file:read("*a")
+  file:close()
+  return content
+end
+
+local function start_input_fixture(remote, mode, capture, hide_key)
+  remote([[
+    local fixture, capture, hide_key = ...
+    require('yt-tui').setup({
+      executable = vim.fn.exepath('python3'),
+      args = { fixture, 'raw', capture },
+      hide_key = hide_key,
+    })
+    assert(require('yt-tui').open())
+  ]], { fixture, capture, hide_key })
+  eventually(function()
+    return vim.fn.filereadable(capture .. ".raw-ready") == 1
+  end, "raw fixture did not start")
+  mode("t")
+  return remote([[
+    local buf = vim.api.nvim_get_current_buf()
+    local job = vim.b[buf].terminal_job_id
+    return { buf = buf, job = job, pid = vim.fn.jobpid(job) }
+  ]])
+end
+
+test("configured hide chord works through terminal input without consuming ordinary keys", function()
+  with_input_editor(function(remote, input, mode)
+    local capture = temp .. "/hide-input.json"
+    local original = start_input_fixture(remote, mode, capture, "<C-w>q")
+    input("kj yt<Esc>")
+    eventually(function()
+      return captured_input(capture) == "kj yt\27"
+    end, "kj, leader text, or Escape was intercepted")
+    input("<C-w>q")
+    mode("n")
+    check(remote("return #vim.fn.win_findbuf(...) == 0", { original.buf }), "hide chord left the float visible")
+    check(remote("return vim.fn.jobwait({...}, 0)[1]", { original.job }) == -1, "hide chord stopped the process")
+    check(captured_input(capture) == "kj yt\27", "hide chord leaked into the application")
+    remote("assert(require('yt-tui').open())")
+    mode("t")
+    local resumed = remote([[
+      local buf = vim.api.nvim_get_current_buf()
+      local job = vim.b[buf].terminal_job_id
+      return { buf = buf, job = job, pid = vim.fn.jobpid(job) }
+    ]])
+    check(vim.deep_equal(original, resumed), "hide chord replaced the terminal session")
+    input("<C-\\><C-n>")
+    mode("nt")
+    input("<C-w>q")
+    eventually(function()
+      return remote("return #vim.fn.win_findbuf(...) == 0", { original.buf })
+    end, "normal-mode hide chord left the float visible")
+    check(remote("return vim.fn.jobwait({...}, 0)[1]", { original.job }) == -1, "normal-mode hide stopped the process")
+  end)
+end)
+
+test("hide chord can be changed or disabled without global terminal mappings", function()
+  with_input_editor(function(remote, input, mode)
+    local capture = temp .. "/custom-hide-input.json"
+    local original = start_input_fixture(remote, mode, capture, "<C-x>h")
+    input("<C-w>q")
+    eventually(function() return captured_input(capture) == "\23q" end, "unconfigured chord was intercepted")
+    input("<C-x>h")
+    mode("n")
+    check(remote("return #vim.fn.win_findbuf(...) == 0", { original.buf }), "custom hide chord did not hide")
+    check(remote("return #vim.api.nvim_get_keymap('t')") == 0, "hide chord created a global terminal mapping")
+    remote("require('yt-tui').close()")
+    capture = temp .. "/disabled-hide-input.json"
+    original = start_input_fixture(remote, mode, capture, false)
+    input("<C-w>q<C-x>h")
+    eventually(function() return captured_input(capture) == "\23q\24h" end, "disabled mapping still intercepted input")
+    check(remote("return #vim.fn.win_findbuf(...) == 1", { original.buf }), "disabled chord hid the float")
+  end)
+end)
+
+test("invalid hide chord settings preserve the previous configuration", function()
+  configure("hold", { hide_key = "<C-w>q" })
+  for _, value in ipairs({ true, 42, {}, "", "bad\0key" }) do
+    check(not pcall(plugin.setup, { hide_key = value }), "invalid hide_key was accepted")
+  end
+  check(plugin.open(), "invalid setup replaced the usable configuration")
+  local session = current_session()
+  vim.cmd.stopinsert()
+  local keys = api.nvim_replace_termcodes("<C-w>q", true, false, true)
+  api.nvim_feedkeys(keys, "mx", false)
+  assert_hidden(session)
+end)
+
 test("commands and repeated setup", function()
   configure()
   configure()

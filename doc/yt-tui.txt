@@ -47,12 +47,18 @@ KEYS                                                           *yt-tui-keys*
 The plugin sets no global mappings. The example lazy.nvim configuration maps
 <leader>yt to :YtTuiToggle and <leader>yR to :YtTuiRestart in normal mode.
 
-Use CTRL-\ CTRL-N to leave terminal mode, then q or <Esc> to hide the float.
-From code, use <leader>yt to resume. These hide keys belong to terminal NORMAL
-mode. In terminal mode, keys go to yt-tui or its nested editor: Escape keeps
-its application behavior, and application quit keys (q on the dashboard or
-CTRL-C) end the session. Leader sequences are not intercepted in terminal
-mode, so they remain usable when typing into the application or its editor.
+With the example configuration, press CTRL-W then q to hide the float
+directly, following Vim's window-close convention. From code, use <leader>yt
+to resume or <leader>yR to start fresh. No terminal-mode escape is needed.
+
+The configured hide chord belongs to the outer float, including while editing
+in nested Neovim. Other keys go to yt-tui or its editor: kj remains available
+to your editor, Escape keeps its application behavior, and application quit
+keys (q on the dashboard or CTRL-C) end the session. Leader sequences remain
+available when typing into the application or its editor.
+
+If hide_key is disabled, the native CTRL-\ CTRL-N sequence enters terminal
+normal mode, where q or <Esc> hides the float. :YtTuiHide is also available.
 
 The buffer sets b:terminal_passthrough before TermOpen. User configurations
 can check this flag when installing terminal mappings such as kj.
@@ -89,11 +95,20 @@ CONFIGURATION                                                *yt-tui-setup*
       height = 0.9,
       border = "rounded",
       title = " yt-tui ",
+      hide_key = false,
     })
 <
 width and height are fractions greater than zero and at most one. The window
 is centered. border accepts built-in border style names such as rounded,
 single, double, solid, shadow, and none. Highlights follow the colorscheme.
+
+hide_key is false by default. Set it to a nonempty key sequence, for example
+"<C-w>q", to hide directly from terminal or normal mode. The mapping is local
+to this plugin's terminal buffer. The lazy.nvim examples enable "<C-w>q".
+Use another sequence or false to change or disable it. Mapping prefixes wait
+for another key according to 'timeoutlen'; with "<C-w>q", CTRL-W alone may
+briefly wait before reaching the application. The completed hide chord stays
+reserved for the outer float even inside a nested editor.
 
 executable is a single executable name or path, without flags. Use
 vim.fn.expand() for paths containing ~. args is a list of default arguments;

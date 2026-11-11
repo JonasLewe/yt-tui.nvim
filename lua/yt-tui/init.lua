@@ -8,6 +8,7 @@ local defaults = {
   height = 0.9,
   border = "rounded",
   title = " yt-tui ",
+  hide_key = false,
 }
 local config = vim.deepcopy(defaults)
 local session
@@ -57,6 +58,13 @@ function M.setup(opts)
   end
   if type(next_config.title) ~= "string" then
     error("yt-tui.nvim: title must be a string", 2)
+  end
+  if next_config.hide_key ~= false
+    and (type(next_config.hide_key) ~= "string"
+      or next_config.hide_key == ""
+      or next_config.hide_key:find("\0", 1, true))
+  then
+    error("yt-tui.nvim: hide_key must be a nonempty key sequence or false", 2)
   end
   config = vim.deepcopy(next_config)
 end
@@ -320,6 +328,15 @@ local function launch(args)
   })
   for _, key in ipairs({ "q", "<Esc>" }) do
     vim.keymap.set("n", key, function()
+      if session == current then
+        M.hide()
+      end
+    end, { buffer = current.buf, silent = true, desc = "Hide yt-tui window" })
+  end
+  if current.opts.hide_key then
+    -- Opt in to one outer-window gesture without consuming editor escape keys
+    -- or printable leader sequences inside yt-tui and its nested editor.
+    vim.keymap.set({ "n", "t" }, current.opts.hide_key, function()
       if session == current then
         M.hide()
       end

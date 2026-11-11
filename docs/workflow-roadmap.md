@@ -42,7 +42,8 @@ Status: implemented. Branch: `feature/persistent-session` in `yt-tui.nvim`.
 - `:YtTuiToggle` / `toggle()` hides a visible float or resumes the existing
   hidden session. The user's `<leader>yt` maps to this action.
 - `:YtTuiHide` / `hide()` and terminal-normal-mode `q`/Escape hide the window.
-  They retain the terminal buffer and process. Terminal-mode keys continue to
+  They retain the terminal buffer and process. An optional buffer-local
+  `hide_key` can hide directly from terminal mode; other keys continue to
   belong to yt-tui and any nested editor; no leader sequence is intercepted.
 - `:YtTuiRestart[!] [arguments]` / `restart(args, opts)` intentionally starts
   fresh. With a live session, ask before discarding it; cancellation is the
@@ -99,7 +100,8 @@ tab; toggling hides any owned float visible in that tab. Buffer unloading,
 as well as deletion, stops the session. Failed output requires explicit
 restart, replacing the old automatic retry behavior so diagnostics are kept.
 
-Validation: all 38 headless tests with real PTY processes pass on Neovim 0.12.4.
+Initial validation: all 38 headless tests with real PTY processes pass on
+Neovim 0.12.4.
 Coverage includes process/buffer/content identity, repeated hide/resume without
 callback leaks, resize and cross-tab movement, restart confirmation and literal
 arguments, hidden exits/failures, stale callbacks, and synchronous Neovim hooks
@@ -111,3 +113,24 @@ help-tag generation, example Lua parsing, and whitespace checks passed.
 The historical `implementation-plan.md` describes v0.1.0; this plan supersedes
 its close/reopen lifecycle decisions. Items 2-8 above remain unimplemented
 proposals; configuring existing quick actions remains separate setup work.
+
+### Keymap refinement (2026-11-11)
+
+The native terminal-mode escape was awkward on the user's keyboard. Enable
+`hide_key = "<C-w>q"` in the local configuration and lazy.nvim examples: press
+Ctrl+w, then q to hide directly, following Vim's window-close convention.
+`<leader>yt` resumes and `<leader>yR` starts fresh as before.
+
+The plugin option defaults to `false` and accepts a nonempty key sequence when
+enabled. Its mapping is local to the session's terminal buffer in terminal and
+normal modes; configuration changes apply to the next fresh session. The chord
+is reserved for the outer float even inside nested Neovim. Other keys,
+including `kj`, Escape, and leader sequences, remain available to the child.
+The prefix follows the user's `timeoutlen`, so Ctrl+w alone may wait briefly
+before reaching the child. The option can be changed or disabled without
+altering global terminal mappings or the existing hide/resume lifecycle.
+
+Refinement validation: all 41 tests pass. The added checks drive real terminal
+input through a separate Neovim instance and capture raw PTY bytes, verifying
+direct hide/resume, unchanged process identity, ordinary-key passthrough,
+alternative/disabled mappings, and rejected invalid configuration.

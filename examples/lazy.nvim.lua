@@ -8,7 +8,7 @@ return {
       { "<leader>yt", "<cmd>YtTuiToggle<cr>", desc = "Toggle YouTrack" },
       { "<leader>yR", "<cmd>YtTuiRestart<cr>", desc = "Restart YouTrack" },
     },
-    opts = {},
+    opts = { hide_key = "<C-w>q" },
   },
   {
     "folke/which-key.nvim",

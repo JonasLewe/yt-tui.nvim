@@ -5,11 +5,20 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tty
 
 mode, capture = sys.argv[1:3]
 Path(capture).write_text(json.dumps(sys.argv[3:]), encoding="utf-8")
 Path(capture + ".pid").write_text(str(os.getpid()), encoding="utf-8")
 print("YT_FIXTURE_READY", flush=True)
+
+if mode == "raw":
+    tty.setraw(sys.stdin.fileno())
+    Path(capture + ".raw-ready").touch()
+    with Path(capture + ".input").open("wb", buffering=0) as received:
+        while data := os.read(sys.stdin.fileno(), 1024):
+            received.write(data)
+    sys.exit(0)
 
 child = None
 if mode == "nested":
