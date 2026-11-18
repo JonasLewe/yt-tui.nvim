@@ -54,7 +54,7 @@ These browsing keys require a compatible yt-tui build with Neovim hide integrati
 
 The letters remain normal input in forms, searches, and your nested editor. Close an active menu or finish/cancel editing before using the browsing quit keys. The plugin does not intercept printable letters or leader sequences in terminal mode, so your editor's `kj`, Escape, and normal commands keep working. The buffer sets `b:terminal_passthrough` before starting the terminal so user configuration can skip terminal mappings such as `kj`.
 
-If you enter Neovim's terminal normal mode, `q` or `Esc` hides the float and `Q` stops the process. `:YtTuiHide` and `:YtTuiClose` are also always available.
+In Neovim's terminal normal mode, `Esc` sends Escape to the running application and resumes terminal input. If the process has failed, `Esc` leaves its output visible. Press `q` to hide the float or `Q` to close it. `:YtTuiHide` and `:YtTuiClose` are also always available.
 
 ### Resume or start fresh
 

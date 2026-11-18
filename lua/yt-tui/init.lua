@@ -197,6 +197,12 @@ local function show(current)
     return false
   end
   api.nvim_win_set_config(win, window_config(current.opts))
+  -- A WinEnter autocmd may return to the editing window. Terminal jobstart
+  -- uses the focused buffer, so do not continue after focus has moved.
+  if api.nvim_get_current_win() ~= win then
+    notify("could not focus floating window: focus moved to another window")
+    return false
+  end
   if previous ~= win then
     current.return_win = previous
   end
@@ -349,13 +355,16 @@ local function launch(args)
       dispose(current)
     end,
   })
-  for _, key in ipairs({ "q", "<Esc>" }) do
-    vim.keymap.set("n", key, function()
-      if session == current then
-        M.hide()
-      end
-    end, { buffer = current.buf, silent = true, desc = "Hide yt-tui window" })
-  end
+  vim.keymap.set("n", "q", function()
+    if session == current then
+      M.hide()
+    end
+  end, { buffer = current.buf, silent = true, desc = "Hide yt-tui window" })
+  vim.keymap.set("n", "<Esc>", function()
+    if session == current and current.running and pcall(api.nvim_chan_send, current.job, "\27") then
+      vim.cmd.startinsert()
+    end
+  end, { buffer = current.buf, silent = true, desc = "Send Escape to yt-tui and resume terminal input" })
   vim.keymap.set("n", "Q", function()
     if session == current then
       M.close()

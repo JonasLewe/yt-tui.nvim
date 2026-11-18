@@ -41,7 +41,7 @@ Status: implemented. Branch: `feature/persistent-session` in `yt-tui.nvim`.
   session. New arguments must never silently replace a live session.
 - `:YtTuiToggle` / `toggle()` hides a visible float or resumes the existing
   hidden session. The user's `<leader>yy` maps to this action.
-- `:YtTuiHide` / `hide()` and terminal-normal-mode `q`/Escape hide the window.
+- `:YtTuiHide` / `hide()` and terminal-normal-mode `q` hide the window.
   They retain the terminal buffer and process. An optional buffer-local
   `hide_key` can hide directly from terminal mode. With a compatible TUI,
   browsing `q` requests hide and `Q` fully quits. Forms, searches, and the
@@ -147,7 +147,8 @@ keys. The current workflow supersedes the earlier Ctrl+w, q recommendation:
 - `<leader>yy` toggles/resumes the float. The old `<leader>yR` example is removed.
 - Forms, search inputs, and nested editors receive literal letters. Close an
   active menu or finish/cancel editing before using browsing quit controls.
-- Neovim terminal-normal-mode `q`/Escape hides; `Q` explicitly stops the process.
+- In terminal normal mode, `q` hides the float and `Q` stops the process.
+  Escape goes to the running application and resumes terminal input.
 - The optional `hide_key` setting remains available, disabled by default. It is
   removed from the local setup and examples because browsing `q` now hides.
 

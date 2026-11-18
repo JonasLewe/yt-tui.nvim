@@ -60,9 +60,10 @@ Close an active menu or finish/cancel editing before using browsing quit
 keys. Terminal-mode letters and leader sequences are not intercepted; kj,
 Escape, and editor commands retain their normal meaning inside the editor.
 
-In Neovim's terminal normal mode, q or <Esc> hides the float and Q stops the
-process. :YtTuiHide and :YtTuiClose are also available. The native
-CTRL-\ CTRL-N sequence enters terminal normal mode if needed.
+In Neovim's terminal normal mode, <Esc> sends Escape to the running application
+and resumes terminal input. After a failure, <Esc> leaves the output visible.
+Press q to hide the float or Q to close it. :YtTuiHide and :YtTuiClose are also
+available. CTRL-\ CTRL-N enters terminal normal mode.
 
 The buffer sets b:terminal_passthrough before TermOpen. User configurations
 can check this flag when installing terminal mappings such as kj.
